@@ -701,3 +701,34 @@ class MemPalace:
         conn.close()
 
         logger.info(f"Cleanup complete: archived {archived} old facts")
+
+    def deep_remember(self, query: str, top_k: int = 15) -> str:
+        """Глубокий поиск в архивах памяти (для команды 'ВСПОМНИ')"""
+        context_parts = [f"🔍 РЕЖИМ: ГЛУБОКИЙ ПОИСК\n👤 Пользователь #{self.user_id}"]
+
+        if self.collection and self.collection.count() > 0:
+            try:
+                results = self.collection.query(query_texts=[query], n_results=min(top_k * 2, self.collection.count()),
+                                                include=["documents", "metadatas", "distances"])
+                for doc, meta, dist in zip(results['documents'][0], results['metadatas'][0], results['distances'][0]):
+                    if dist < 2.0:
+                        context_parts.append(
+                            f"[{meta.get('hall', 'facts')}|{meta.get('timestamp', '?')[:10]}]: {doc[:300]}")
+            except Exception as e:
+                logger.error(f"Deep search error: {e}")
+
+        conn = sqlite3.connect(self.graph_db)
+        cursor = conn.cursor()
+        keywords = [kw for kw in query.lower().split() if len(kw) > 3]
+        if keywords:
+            conditions = " OR ".join([f"(subject LIKE ? OR object LIKE ? OR predicate LIKE ?)" for _ in keywords])
+            params = [item for kw in keywords for item in [f'%{kw}%', f'%{kw}%', f'%{kw}%']] + [
+                datetime.now().isoformat()]
+            cursor.execute(
+                f"SELECT subject, predicate, object, hall, room, created_at FROM facts WHERE ({conditions}) AND (valid_to IS NULL OR valid_to > ?) ORDER BY created_at DESC LIMIT {top_k * 2}",
+                params)
+            for subj, pred, obj, hall, room, created in cursor.fetchall():
+                context_parts.append(f"[Факт|{hall}/{room}|{created[:10]}]: {subj} {pred} {obj}")
+        conn.close()
+        return "\n".join(context_parts[:top_k + 5]) if len(
+            context_parts) > 1 else "🔍 Ничего не найдено в глубокой памяти."
