@@ -406,7 +406,7 @@ async def handle_message(msg: types.Message):
     # Если в тексте есть слова, указывающие на поставщика
     if any(kw in text for kw in ['поставщик', 'контакт', 'телефон', 'компания', 'менеджер']):
         # Используем метод auto_detect_fields для извлечения данных из текста
-        detected = db.auto_detect_fields(msg.text, category='supplier')
+        detected = db.auto_detect_fields(msg.text)
 
         # Если имя поставщика найдено и оно длиннее 3 символов
         if detected.get('name') and len(detected['name']) > 3:
@@ -447,7 +447,7 @@ async def handle_message(msg: types.Message):
     # Если в тексте есть слова, указывающие на товар
     elif any(kw in text for kw in ['болт', 'гайка', 'винт', 'шайба', 'шуруп', 'саморез', 'метиз', 'крепёж']):
         # Извлекаем данные о товаре
-        detected = db.auto_detect_fields(msg.text, category='product')
+        detected = db.auto_detect_fields(msg.text)
 
         # Если имя товара найдено и длиннее 2 символов
         if detected.get('name') and len(detected['name']) > 2:
