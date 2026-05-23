@@ -1,0 +1,7 @@
+# Содержимое .gitignore
+.env
+venv/
+__pycache__/
+*.pyc
+data/
+logs/
