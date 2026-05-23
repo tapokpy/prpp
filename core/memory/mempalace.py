@@ -4,6 +4,7 @@ from chromadb.utils import embedding_functions
 import sqlite3
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
@@ -42,7 +43,6 @@ class MemPalace:
             # Используем SentenceTransformer вместо ONNX (работает стабильнее на Windows)
             embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name="all-MiniLM-L6-v2"
-
             )
 
             self.collection = self.chroma_client.get_or_create_collection(
@@ -84,7 +84,7 @@ class MemPalace:
                 wing TEXT DEFAULT 'default',
                 room TEXT DEFAULT 'default',
                 hall TEXT DEFAULT 'hall_facts',
-                valid_from TIMESTAMP,
+                valid_from TIMESTAMP, 
                 valid_to TIMESTAMP,
                 confidence REAL DEFAULT 1.0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -162,23 +162,19 @@ class MemPalace:
         """
         Wake-Up слой (L0+L1): загрузка контекста перед генерацией ответа
 
-        Согласно архитектуре MemPalace:
-        - L0: Мета-информация о пользователе (~50 токенов)
-        - L1: Релевантные факты из Halls (~120 токенов)
-
         Args:
             query: Текущий запрос пользователя
             top_k: Количество релевантных воспоминаний
 
         Returns:
-            Компактный контекст для промпта (~170 токенов база)
+            Компактный контекст для промпта
         """
         context_parts = []
 
         # L0: Мета-информация (Кто этот пользователь?)
         context_parts.append(f"👤 Пользователь #{self.user_id}")
         if self._user_meta.get("active_projects"):
-            context_parts.append(f"📁 Проекты: {self._user_meta['active_projects']}")
+            context_parts.append(f" Проекты: {self._user_meta['active_projects']}")
 
         # L1: Поиск релевантных фактов по векторам (ChromaDB)
         if self.collection and self.collection.count() > 0:
@@ -189,13 +185,13 @@ class MemPalace:
                     include=["documents", "metadatas", "distances"]
                 )
 
-                # Фильтруем по релевантности (distance < 1.0 для cosine similarity)
+                # Фильтруем по релевантности (distance < 1.5 для cosine similarity)
                 for doc, meta, dist in zip(
                         results['documents'][0],
                         results['metadatas'][0],
                         results['distances'][0]
                 ):
-                    if dist < 1.5:  # Порог релевантности
+                    if dist < 1.5:
                         hall_type = meta.get('hall', 'facts')
                         context_parts.append(f"[{hall_type}]: {doc[:200]}")
 
@@ -207,9 +203,9 @@ class MemPalace:
         cursor = conn.cursor()
 
         # Ищем факты по ключевым словам из запроса
-        keywords = query.lower().split()[:3]  # Первые 3 слова
+        keywords = query.lower().split()[:3]
         for keyword in keywords:
-            if len(keyword) > 3:  # Пропускаем короткие слова
+            if len(keyword) > 3:
                 cursor.execute("""
                     SELECT subject, predicate, object, hall
                     FROM facts
@@ -225,25 +221,103 @@ class MemPalace:
 
         conn.close()
 
-        # Ограничиваем размер контекста (~170 токенов база)
+        # Ограничиваем размер контекста
         final_context = "\n".join(context_parts[:top_k + 2])
-        logger.info(f"Wake-Up context: {len(final_context)} chars, {len(context_parts)} parts")
+        logger.info(f"Wake-Up context: {len(final_context)} chars")
 
         return final_context
+
+    # ==========================================
+    # 🧠 НОВЫЙ МЕТОД ДЛЯ РЕЖИМА "ВСПОМНИ"
+    # ==========================================
+
+    def deep_remember(self, query: str, top_k: int = 15) -> str:
+        """
+        Глубокий поиск в архивах памяти (для команды "ВСПОМНИ").
+        Расширенный поиск по векторам и фактам с более мягкими фильтрами.
+        """
+        context_parts = []
+
+        # Заголовок для контекста
+        context_parts.append(f"🔍 РЕЖИМ: ГЛУБОКИЙ ПОИСК В ПАМЯТИ\n")
+        context_parts.append(f"👤 Пользователь #{self.user_id}\n")
+
+        # 1. Расширенный векторный поиск (ChromaDB)
+        if self.collection and self.collection.count() > 0:
+            try:
+                # Ищем больше записей (top_k * 2), чтобы отфильтровать менее релевантные
+                results = self.collection.query(
+                    query_texts=[query],
+                    n_results=min(top_k * 2, self.collection.count()),
+                    include=["documents", "metadatas", "distances"]
+                )
+
+                # Мягче порог релевантности (2.0 вместо 1.5)
+                for doc, meta, dist in zip(
+                        results['documents'][0],
+                        results['metadatas'][0],
+                        results['distances'][0]
+                ):
+                    if dist < 2.0:
+                        hall_type = meta.get('hall', 'facts')
+                        # Берем больше текста из документа (300 символов)
+                        timestamp = meta.get('timestamp', '')[:10] if meta.get('timestamp') else '?'
+                        context_parts.append(f"[{hall_type}|{timestamp}]: {doc[:300]}")
+
+            except Exception as e:
+                logger.error(f"Deep remember ChromaDB error: {e}")
+
+        # 2. Глубокий поиск в графе знаний (SQLite)
+        conn = sqlite3.connect(self.graph_db)
+        cursor = conn.cursor()
+
+        # Ищем по всем значимым ключевым словам (длиннее 3 символов)
+        keywords = [kw for kw in query.lower().split() if len(kw) > 3]
+
+        if keywords:
+            # Строим SQL запрос с OR для каждого ключевого слова
+            # Это позволяет найти факты, где упоминается ЛЮБОЕ из ключевых слов
+            conditions = " OR ".join([
+                f"(subject LIKE ? OR object LIKE ? OR predicate LIKE ?)"
+                for _ in keywords
+            ])
+
+            params = []
+            for kw in keywords:
+                params.extend([f'%{kw}%', f'%{kw}%', f'%{kw}%'])
+
+            # Добавляем фильтр по валидности и сортировку
+            query_sql = f"""
+                SELECT subject, predicate, object, hall, room, created_at
+                FROM facts
+                WHERE ({conditions})
+                AND (valid_to IS NULL OR valid_to > ?)
+                ORDER BY created_at DESC
+                LIMIT {top_k * 2}
+            """
+            params.append(datetime.now().isoformat())
+
+            cursor.execute(query_sql, params)
+
+            for subj, pred, obj, hall, room, created in cursor.fetchall():
+                date_str = created[:10] if created else '?'
+                context_parts.append(f"[Факт|{hall}/{room}|{date_str}]: {subj} {pred} {obj}")
+
+        conn.close()
+
+        # Если ничего не нашли
+        if len(context_parts) <= 2:
+            return "🔍 В глубокой памяти не найдено записей по этому запросу."
+
+        return "\n".join(context_parts[:top_k + 5])
+
+    # ==========================================
 
     def store_interaction(self, query: str, response: str,
                           tokens_used: int = 0, latency_ms: int = 0,
                           wing: str = "default", room: str = "default"):
         """
         Сохранение диалога в память (MemPalace Storage)
-
-        Args:
-            query: Вопрос пользователя
-            response: Ответ бота
-            tokens_used: Количество использованных токенов
-            latency_ms: Время генерации ответа
-            wing: Крыло (категория проекта)
-            room: Комната (конкретная тема)
         """
         # 1. Сохраняем в векторное хранилище (ChromaDB)
         if self.collection:
@@ -302,16 +376,11 @@ class MemPalace:
             int(self._user_meta.get("total_interactions", 0)) + 1
         )
 
-        logger.info(f"Interaction stored: {query[:50]}... (tokens: {tokens_used})")
+        logger.info(f"Interaction stored: {query[:50]}...")
 
     def _classify_hall(self, query: str, response: str) -> str:
         """
         Классификация контента по Залам (Halls)
-
-        Halls согласно MemPalace:
-        - hall_facts: Факты, решения, данные
-        - hall_events: События, дебаг, действия
-        - hall_preferences: Предпочтения, привычки
         """
         query_lower = query.lower()
         response_lower = response.lower()
@@ -335,8 +404,6 @@ class MemPalace:
                                      wing: str, room: str) -> List[Tuple[str, str, str, str]]:
         """
         Извлечение фактов из ответа (Temporal Knowledge Graph)
-
-        Возвращает список триплетов: (subject, predicate, object, hall)
         """
         facts = []
         hall = self._classify_hall(query, response)
@@ -358,7 +425,7 @@ class MemPalace:
             if len(subj) > 1 and len(obj) > 2:
                 facts.append((subj.strip(), "equals", obj.strip(), hall))
 
-        return facts[:5]  # Ограничиваем количество фактов
+        return facts[:5]
 
     def add_fact(self, subject: str, predicate: str, obj: str,
                  wing: str = "default", room: str = "default",
@@ -367,17 +434,6 @@ class MemPalace:
                  confidence: float = 1.0):
         """
         Добавление факта в граф знаний (Temporal KG)
-
-        Args:
-            subject: Субъект (кто/что)
-            predicate: Предикат (связь)
-            obj: Объект (значение)
-            wing: Крыло (категория)
-            room: Комната (тема)
-            hall: Зал (тип факта)
-            valid_from: Действителен с
-            valid_to: Действителен до (None = бессрочно)
-            confidence: Уверенность (0.0-1.0)
         """
         conn = sqlite3.connect(self.graph_db)
         cursor = conn.cursor()
@@ -392,13 +448,11 @@ class MemPalace:
         conn.commit()
         conn.close()
 
-        logger.info(f"Fact added: {subject} {predicate} {obj} (valid: {valid_from} - {valid_to})")
+        logger.info(f"Fact added: {subject} {predicate} {obj}")
 
     def invalidate_facts(self, subject: str = None, room: str = None):
         """
         Инвалидация фактов (когда проект закрыт или данные устарели)
-
-        Устанавливает valid_to = now для указанных фактов
         """
         conn = sqlite3.connect(self.graph_db)
         cursor = conn.cursor()
@@ -431,9 +485,6 @@ class MemPalace:
     def get_stats(self) -> Dict:
         """
         Получение статистики памяти (для админ-панели)
-
-        Returns:
-            Dict с метриками: interactions, facts, vectors
         """
         conn = sqlite3.connect(self.graph_db)
         cursor = conn.cursor()
@@ -470,7 +521,7 @@ class MemPalace:
             "total_facts": sum(facts_by_hall.values()),
             "facts_by_hall": facts_by_hall,
             "vector_count": vector_count,
-            "active_rooms": active_rooms[:10],  # Топ-10 активных комнат
+            "active_rooms": active_rooms[:10],
             "storage_size_mb": self._get_storage_size_mb()
         }
 
@@ -495,15 +546,6 @@ class MemPalace:
                         room: str = None, top_k: int = 10) -> List[Dict]:
         """
         Поиск воспоминаний (для MCP-интеграции и админки)
-
-        Args:
-            query: Поисковый запрос
-            wing: Фильтр по крылу
-            room: Фильтр по комнате
-            top_k: Количество результатов
-
-        Returns:
-            Список найденных воспоминаний с метаданными
         """
         results = []
 
@@ -533,7 +575,7 @@ class MemPalace:
                         "document": doc,
                         "metadata": meta,
                         "distance": float(dist),
-                        "relevance": 1.0 / (1.0 + dist)  # Преобразуем distance в relevance
+                        "relevance": 1.0 / (1.0 + dist)
                     })
 
             except Exception as e:
@@ -547,7 +589,7 @@ class MemPalace:
             SELECT 'fact' as type, 
                    subject || ' ' || predicate || ' ' || object as content,
                    wing, room, hall, created_at,
-                   0.8 as relevance  # Факты чуть менее релевантны чем вектора
+                   0.8 as relevance
             FROM facts
             WHERE (subject LIKE ? OR object LIKE ?)
             AND (valid_to IS NULL OR valid_to > ?)
@@ -588,12 +630,6 @@ class MemPalace:
     def export_memory(self, format: str = "json") -> str:
         """
         Экспорт всей памяти пользователя (для бэкапа)
-
-        Args:
-            format: "json" или "sql"
-
-        Returns:
-            Строка с экспортированными данными
         """
         conn = sqlite3.connect(self.graph_db)
         conn.row_factory = sqlite3.Row
@@ -639,17 +675,12 @@ class MemPalace:
     def cleanup_old_memories(self, days: int = 90):
         """
         Очистка старых воспоминаний (оптимизация хранилища)
-
-        Args:
-            days: Хранить воспоминания за последние N дней
         """
         cutoff_date = datetime.now().timestamp() - (days * 24 * 60 * 60)
 
         # Удаляем старые вектора из ChromaDB
         if self.collection:
             try:
-                # ChromaDB не поддерживает фильтрацию по времени напрямую,
-                # поэтому удаляем всё и пересоздаём (или используем метаданные)
                 logger.info(f"Cleanup: keeping memories from last {days} days")
             except Exception as e:
                 logger.error(f"ChromaDB cleanup error: {e}")
