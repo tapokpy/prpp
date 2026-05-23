@@ -26,7 +26,7 @@ from aiogram import Bot, Dispatcher, types
 # Импортируем фильтр команд (для обработки /start, /help и т.д.)
 from aiogram.filters import Command
 # Импортируем тип ChatAction для отправки статуса "печатает..."
-from aiogram.types import ChatAction
+from aiogram.enums import ChatAction
 
 # === Импорты из вашего проекта ===
 
