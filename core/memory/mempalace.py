@@ -41,8 +41,8 @@ class MemPalace:
 
             # Используем SentenceTransformer вместо ONNX (работает стабильнее на Windows)
             embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name="all-MiniLM-L6-v2",
-                trust_remote_code=True
+                model_name="all-MiniLM-L6-v2"
+
             )
 
             self.collection = self.chroma_client.get_or_create_collection(
