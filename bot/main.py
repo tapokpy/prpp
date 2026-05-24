@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # === Импорты библиотек ===
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ChatAction
+from aiogram.enums import ChatAction
 
 # === Импорты из нашего проекта ===
 from config import TELEGRAM_BOT_TOKEN, ADMIN_USER_IDS, DATA_DIR, UPLOADS_DIR
@@ -279,7 +279,8 @@ async def handle_message(msg: types.Message):
     led_keywords = ['модуль', 'блок питания', 'бп', 'контроллер', 'novastar', 'кабель', 'power', 'psu', 'p3.9', 'p4',
                     'p5']
     if any(kw in text for kw in led_keywords):
-        detected = db.auto_detect_fields(msg.text)
+       # detected = db.auto_detect_fields(msg.text)
+        detected = db.auto_detect_fields(msg.text, category_hint='supplier')
         if detected.get('name') and len(detected['name']) > 2:
             db.add_product(
                 name=detected['name'],
