@@ -22,7 +22,6 @@ class MemPalace:
     def __init__(self, user_id: int):
         """
         Инициализация памяти для конкретного пользователя
-
         Args:
             user_id: Telegram ID пользователя
         """
@@ -40,7 +39,6 @@ class MemPalace:
                 )
             )
 
-            # Используем SentenceTransformer вместо ONNX (работает стабильнее на Windows)
             embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name="all-MiniLM-L6-v2"
             )
@@ -55,10 +53,8 @@ class MemPalace:
                 }
             )
             logger.info(f"ChromaDB initialized for user {user_id}")
-
         except Exception as e:
             logger.error(f"ChromaDB initialization error: {e}")
-            # Fallback: создаём заглушку если chromadb не работает
             self.collection = None
             logger.warning("Using fallback memory mode (SQLite only)")
 
@@ -76,43 +72,43 @@ class MemPalace:
 
         # Таблица фактов с временными метками (Temporal KG)
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                wing TEXT DEFAULT 'default',
-                room TEXT DEFAULT 'default',
-                hall TEXT DEFAULT 'hall_facts',
-                valid_from TIMESTAMP, 
-                valid_to TIMESTAMP,
-                confidence REAL DEFAULT 1.0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+        CREATE TABLE IF NOT EXISTS facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            object TEXT NOT NULL,
+            wing TEXT DEFAULT 'default',
+            room TEXT DEFAULT 'default',
+            hall TEXT DEFAULT 'hall_facts',
+            valid_from TIMESTAMP,
+            valid_to TIMESTAMP,
+            confidence REAL DEFAULT 1.0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
         """)
 
         # Таблица диалогов (interactions)
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS interactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                query TEXT NOT NULL,
-                response TEXT NOT NULL,
-                wing TEXT DEFAULT 'default',
-                room TEXT DEFAULT 'default',
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                tokens_used INTEGER DEFAULT 0,
-                latency_ms INTEGER DEFAULT 0
-            )
+        CREATE TABLE IF NOT EXISTS interactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT NOT NULL,
+            response TEXT NOT NULL,
+            wing TEXT DEFAULT 'default',
+            room TEXT DEFAULT 'default',
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tokens_used INTEGER DEFAULT 0,
+            latency_ms INTEGER DEFAULT 0
+        )
         """)
 
         # Таблица мета-информации о пользователе (L0 слой)
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS user_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+        CREATE TABLE IF NOT EXISTS user_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
         """)
 
         # Индексы для быстрого поиска
@@ -150,22 +146,22 @@ class MemPalace:
         """Сохранение мета-информации"""
         conn = sqlite3.connect(self.graph_db)
         cursor = conn.cursor()
+
         for key, value in meta.items():
             cursor.execute("""
-                INSERT OR REPLACE INTO user_meta (key, value, updated_at)
-                VALUES (?, ?, ?)
+            INSERT OR REPLACE INTO user_meta (key, value, updated_at)
+            VALUES (?, ?, ?)
             """, (key, str(value), datetime.now().isoformat()))
+
         conn.commit()
         conn.close()
 
     def wake_up(self, query: str, top_k: int = 5) -> str:
         """
         Wake-Up слой (L0+L1): загрузка контекста перед генерацией ответа
-
         Args:
             query: Текущий запрос пользователя
             top_k: Количество релевантных воспоминаний
-
         Returns:
             Компактный контекст для промпта
         """
@@ -194,7 +190,6 @@ class MemPalace:
                     if dist < 1.5:
                         hall_type = meta.get('hall', 'facts')
                         context_parts.append(f"[{hall_type}]: {doc[:200]}")
-
             except Exception as e:
                 logger.error(f"ChromaDB query error: {e}")
 
@@ -207,12 +202,12 @@ class MemPalace:
         for keyword in keywords:
             if len(keyword) > 3:
                 cursor.execute("""
-                    SELECT subject, predicate, object, hall
-                    FROM facts
-                    WHERE (subject LIKE ? OR object LIKE ?)
-                    AND (valid_to IS NULL OR valid_to > ?)
-                    ORDER BY created_at DESC
-                    LIMIT 2
+                SELECT subject, predicate, object, hall
+                FROM facts
+                WHERE (subject LIKE ? OR object LIKE ?)
+                AND (valid_to IS NULL OR valid_to > ?)
+                ORDER BY created_at DESC
+                LIMIT 2
                 """, (f'%{keyword}%', f'%{keyword}%', datetime.now().isoformat()))
 
                 facts = cursor.fetchall()
@@ -228,9 +223,8 @@ class MemPalace:
         return final_context
 
     # ==========================================
-    # 🧠 НОВЫЙ МЕТОД ДЛЯ РЕЖИМА "ВСПОМНИ"
+    # 🧠 МЕТОД ДЛЯ РЕЖИМА "ВСПОМНИ"
     # ==========================================
-
     def deep_remember(self, query: str, top_k: int = 15) -> str:
         """
         Глубокий поиск в архивах памяти (для команды "ВСПОМНИ").
@@ -245,7 +239,6 @@ class MemPalace:
         # 1. Расширенный векторный поиск (ChromaDB)
         if self.collection and self.collection.count() > 0:
             try:
-                # Ищем больше записей (top_k * 2), чтобы отфильтровать менее релевантные
                 results = self.collection.query(
                     query_texts=[query],
                     n_results=min(top_k * 2, self.collection.count()),
@@ -260,10 +253,8 @@ class MemPalace:
                 ):
                     if dist < 2.0:
                         hall_type = meta.get('hall', 'facts')
-                        # Берем больше текста из документа (300 символов)
                         timestamp = meta.get('timestamp', '')[:10] if meta.get('timestamp') else '?'
                         context_parts.append(f"[{hall_type}|{timestamp}]: {doc[:300]}")
-
             except Exception as e:
                 logger.error(f"Deep remember ChromaDB error: {e}")
 
@@ -275,8 +266,6 @@ class MemPalace:
         keywords = [kw for kw in query.lower().split() if len(kw) > 3]
 
         if keywords:
-            # Строим SQL запрос с OR для каждого ключевого слова
-            # Это позволяет найти факты, где упоминается ЛЮБОЕ из ключевых слов
             conditions = " OR ".join([
                 f"(subject LIKE ? OR object LIKE ? OR predicate LIKE ?)"
                 for _ in keywords
@@ -286,16 +275,16 @@ class MemPalace:
             for kw in keywords:
                 params.extend([f'%{kw}%', f'%{kw}%', f'%{kw}%'])
 
-            # Добавляем фильтр по валидности и сортировку
-            query_sql = f"""
-                SELECT subject, predicate, object, hall, room, created_at
-                FROM facts
-                WHERE ({conditions})
-                AND (valid_to IS NULL OR valid_to > ?)
-                ORDER BY created_at DESC
-                LIMIT {top_k * 2}
-            """
             params.append(datetime.now().isoformat())
+
+            query_sql = f"""
+            SELECT subject, predicate, object, hall, room, created_at
+            FROM facts
+            WHERE ({conditions})
+            AND (valid_to IS NULL OR valid_to > ?)
+            ORDER BY created_at DESC
+            LIMIT {top_k * 2}
+            """
 
             cursor.execute(query_sql, params)
 
@@ -311,8 +300,6 @@ class MemPalace:
 
         return "\n".join(context_parts[:top_k + 5])
 
-    # ==========================================
-
     def store_interaction(self, query: str, response: str,
                           tokens_used: int = 0, latency_ms: int = 0,
                           wing: str = "default", room: str = "default"):
@@ -322,7 +309,6 @@ class MemPalace:
         # 1. Сохраняем в векторное хранилище (ChromaDB)
         if self.collection:
             try:
-                # Определяем hall по типу контента
                 hall = self._classify_hall(query, response)
 
                 self.collection.add(
@@ -338,7 +324,6 @@ class MemPalace:
                     ids=[f"int_{datetime.now().timestamp()}_{hash(query) % 10000}"]
                 )
                 logger.debug(f"Stored interaction in ChromaDB: {query[:50]}...")
-
             except Exception as e:
                 logger.error(f"ChromaDB store error: {e}")
 
@@ -347,25 +332,25 @@ class MemPalace:
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO interactions 
-            (query, response, wing, room, tokens_used, latency_ms, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO interactions
+        (query, response, wing, room, tokens_used, latency_ms, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (query, response, wing, room, tokens_used, latency_ms, datetime.now()))
 
         # 3. Извлекаем факты из ответа (простая эвристика)
         facts = self._extract_facts_from_response(query, response, wing, room)
         for subj, pred, obj, hall in facts:
             cursor.execute("""
-                INSERT INTO facts (subject, predicate, object, wing, room, hall)
-                VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO facts (subject, predicate, object, wing, room, hall)
+            VALUES (?, ?, ?, ?, ?, ?)
             """, (subj, pred, obj, wing, room, hall))
 
         # 4. Обновляем счётчик взаимодействий
         cursor.execute("""
-            INSERT OR REPLACE INTO user_meta (key, value, updated_at)
-            VALUES ('total_interactions', 
-                    COALESCE((SELECT value FROM user_meta WHERE key='total_interactions'), '0') + 1,
-                    ?)
+        INSERT OR REPLACE INTO user_meta (key, value, updated_at)
+        VALUES ('total_interactions',
+        COALESCE((SELECT value FROM user_meta WHERE key='total_interactions'), '0') + 1,
+        ?)
         """, (datetime.now().isoformat(),))
 
         conn.commit()
@@ -439,15 +424,14 @@ class MemPalace:
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO facts 
-            (subject, predicate, object, wing, room, hall, valid_from, valid_to, confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO facts
+        (subject, predicate, object, wing, room, hall, valid_from, valid_to, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (subject, predicate, obj, wing, room, hall,
               valid_from or datetime.now(), valid_to, confidence))
 
         conn.commit()
         conn.close()
-
         logger.info(f"Fact added: {subject} {predicate} {obj}")
 
     def invalidate_facts(self, subject: str = None, room: str = None):
@@ -463,21 +447,19 @@ class MemPalace:
         if subject:
             conditions.append("subject = ?")
             params.append(subject)
-
         if room:
             conditions.append("room = ?")
             params.append(room)
 
         if conditions:
             query = f"""
-                UPDATE facts 
-                SET valid_to = ?, updated_at = ?
-                WHERE {' AND '.join(conditions)} AND valid_to IS NULL
+            UPDATE facts
+            SET valid_to = ?, updated_at = ?
+            WHERE {' AND '.join(conditions)} AND valid_to IS NULL
             """
             params.extend([datetime.now(), datetime.now()])
             cursor.execute(query, params)
             conn.commit()
-
             logger.info(f"Invalidated {cursor.rowcount} facts")
 
         conn.close()
@@ -495,18 +477,18 @@ class MemPalace:
 
         # Количество фактов по залам
         cursor.execute("""
-            SELECT hall, COUNT(*) 
-            FROM facts 
-            WHERE valid_to IS NULL 
-            GROUP BY hall
+        SELECT hall, COUNT(*)
+        FROM facts
+        WHERE valid_to IS NULL
+        GROUP BY hall
         """)
         facts_by_hall = dict(cursor.fetchall())
 
         # Активные комнаты
         cursor.execute("""
-            SELECT DISTINCT room 
-            FROM interactions 
-            WHERE timestamp > datetime('now', '-30 days')
+        SELECT DISTINCT room
+        FROM interactions
+        WHERE timestamp > datetime('now', '-30 days')
         """)
         active_rooms = [row[0] for row in cursor.fetchall()]
 
@@ -577,7 +559,6 @@ class MemPalace:
                         "distance": float(dist),
                         "relevance": 1.0 / (1.0 + dist)
                     })
-
             except Exception as e:
                 logger.error(f"Vector search error: {e}")
 
@@ -586,20 +567,19 @@ class MemPalace:
         cursor = conn.cursor()
 
         sql_query = """
-            SELECT 'fact' as type, 
-                   subject || ' ' || predicate || ' ' || object as content,
-                   wing, room, hall, created_at,
-                   0.8 as relevance
-            FROM facts
-            WHERE (subject LIKE ? OR object LIKE ?)
-            AND (valid_to IS NULL OR valid_to > ?)
+        SELECT 'fact' as type,
+        subject || ' ' || predicate || ' ' || object as content,
+        wing, room, hall, created_at,
+        0.8 as relevance
+        FROM facts
+        WHERE (subject LIKE ? OR object LIKE ?)
+        AND (valid_to IS NULL OR valid_to > ?)
         """
         params = [f'%{query}%', f'%{query}%', datetime.now().isoformat()]
 
         if wing:
             sql_query += " AND wing = ?"
             params.append(wing)
-
         if room:
             sql_query += " AND room = ?"
             params.append(room)
@@ -658,9 +638,8 @@ class MemPalace:
             }, ensure_ascii=False, indent=2)
 
         elif format == "sql":
-            # SQL дамп (для восстановления)
             dump = f"-- Memory export for user {self.user_id}\n"
-            dump += f"-- Exported at {datetime.now().isoformat()}\n\n"
+            dump += f"-- Exported at {datetime.now().isoformat()}\n"
 
             for interaction in interactions:
                 dump += f"INSERT INTO interactions VALUES ("
@@ -690,45 +669,14 @@ class MemPalace:
         cursor = conn.cursor()
 
         cursor.execute("""
-            UPDATE facts 
-            SET valid_to = ?, updated_at = ?
-            WHERE created_at < ? AND valid_to IS NULL
+        UPDATE facts
+        SET valid_to = ?, updated_at = ?
+        WHERE created_at < ? AND valid_to IS NULL
         """, (datetime.now().isoformat(), datetime.now().isoformat(),
               datetime.fromtimestamp(cutoff_date).isoformat()))
 
         archived = cursor.rowcount
+
         conn.commit()
         conn.close()
-
         logger.info(f"Cleanup complete: archived {archived} old facts")
-
-    def deep_remember(self, query: str, top_k: int = 15) -> str:
-        """Глубокий поиск в архивах памяти (для команды 'ВСПОМНИ')"""
-        context_parts = [f"🔍 РЕЖИМ: ГЛУБОКИЙ ПОИСК\n👤 Пользователь #{self.user_id}"]
-
-        if self.collection and self.collection.count() > 0:
-            try:
-                results = self.collection.query(query_texts=[query], n_results=min(top_k * 2, self.collection.count()),
-                                                include=["documents", "metadatas", "distances"])
-                for doc, meta, dist in zip(results['documents'][0], results['metadatas'][0], results['distances'][0]):
-                    if dist < 2.0:
-                        context_parts.append(
-                            f"[{meta.get('hall', 'facts')}|{meta.get('timestamp', '?')[:10]}]: {doc[:300]}")
-            except Exception as e:
-                logger.error(f"Deep search error: {e}")
-
-        conn = sqlite3.connect(self.graph_db)
-        cursor = conn.cursor()
-        keywords = [kw for kw in query.lower().split() if len(kw) > 3]
-        if keywords:
-            conditions = " OR ".join([f"(subject LIKE ? OR object LIKE ? OR predicate LIKE ?)" for _ in keywords])
-            params = [item for kw in keywords for item in [f'%{kw}%', f'%{kw}%', f'%{kw}%']] + [
-                datetime.now().isoformat()]
-            cursor.execute(
-                f"SELECT subject, predicate, object, hall, room, created_at FROM facts WHERE ({conditions}) AND (valid_to IS NULL OR valid_to > ?) ORDER BY created_at DESC LIMIT {top_k * 2}",
-                params)
-            for subj, pred, obj, hall, room, created in cursor.fetchall():
-                context_parts.append(f"[Факт|{hall}/{room}|{created[:10]}]: {subj} {pred} {obj}")
-        conn.close()
-        return "\n".join(context_parts[:top_k + 5]) if len(
-            context_parts) > 1 else "🔍 Ничего не найдено в глубокой памяти."
